@@ -79,7 +79,7 @@ async function fetchCandles(symbol, interval="15m", limit=100) {
       low:parseFloat(k[3]),  close:parseFloat(k[4]),
       volume:parseFloat(k[5])
     }));
-  } catch(e) { return []; }
+ } catch(e) { console.error("FETCH ERROR:", e.message); return []; }
 }
 
 // ==============================
