@@ -16,18 +16,6 @@ const {
   liquidityZone, closeTrade
 } = require("./ai");
 
-// --- MEMORY ---
-let tradeMemory = [];
-function loadMemory() {
-  try { if (fs.existsSync("memory.json")) tradeMemory = JSON.parse(fs.readFileSync("memory.json")); }
-  catch(e) { tradeMemory = []; }
-}
-function saveMemory() {
-  try { fs.writeFileSync("memory.json", JSON.stringify(tradeMemory, null, 2)); }
-  catch(e) {}
-}
-loadMemory();
-
 const server = express();
 server.use(express.json());
 
@@ -459,7 +447,7 @@ function confluenceDecision(layerScores, urgency, tfAligned, d1h_dir, d4h_dir) {
 // MAIN: analyzeMarket v6
 // ==============================
 async function analyzeMarket(symbol) {
-  let pair=symbol==="GOLD"?"ETHUSDT":symbol+"USDT";
+  let pair = symbol === "GOLD" ? "XAUUSDT" : symbol + "USDT";
 
   // Fetch 6 TF พร้อมกัน (M1→1D)
   let [c15m,c5m,c1m,c1h,c4h,c1d]=await Promise.all([
