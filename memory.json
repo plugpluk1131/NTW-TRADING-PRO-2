@@ -1,0 +1,22 @@
+[
+  {
+    "pattern": "INSIDE_BAR",
+    "result": "WIN",
+    "time": 1773556871687
+  },
+  {
+    "pattern": "INSIDE_BAR",
+    "result": "WIN",
+    "time": 1773556883202
+  },
+  {
+    "pattern": "BULL_ENGULF",
+    "result": "WIN",
+    "time": 1773636085462
+  },
+  {
+    "pattern": "BEAR_ENGULF",
+    "result": "WIN",
+    "time": 1773637132256
+  }
+]
