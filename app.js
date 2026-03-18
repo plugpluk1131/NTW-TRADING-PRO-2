@@ -1,6 +1,5 @@
 // ==============================
-// NTW AI PRO - app.js v7.0
-// FIX: Gold API, SELL signal, faster
+// NTW AI PRO - app.js v7.1
 // ==============================
 
 const fs      = require("fs");
@@ -19,7 +18,7 @@ const server = express();
 server.use(express.json());
 
 // ==============================
-// CACHE (ลด API call ซ้ำ)
+// CACHE
 // ==============================
 let cache = {};
 function getCache(key) {
@@ -65,7 +64,7 @@ function calcVWAP(candles) {
 }
 
 // ==============================
-// FETCH BINANCE (BTC / Crypto)
+// FETCH BINANCE (BTC)
 // ==============================
 async function fetchBinanceCandles(symbol, interval = "15m", limit = 100) {
   let key = `binance_${symbol}_${interval}`;
@@ -92,79 +91,10 @@ async function fetchBinanceCandles(symbol, interval = "15m", limit = 100) {
 }
 
 // ==============================
-// FETCH GOLD (Forex API)
-// ใช้ Polygon.io free tier หรือ
-// Frankfurter fallback
+// FETCH GOLD — Twelve Data API
+// cache 2 นาที = ~720 calls/วัน
 // ==============================
-async function fetchGoldCandles(interval = "15m", limit = 100) {
-  let key = `gold_${interval}`;
-  let cached = getCache(key);
-  if (cached) return cached;
-
-  // --- วิธีที่ 1: ลองจาก Binance (PAXGUSD = gold-backed token)
-  try {
-    let res  = await fetch(`https://api.binance.com/api/v3/klines?symbol=PAXGUSD&interval=${interval}&limit=${limit}`, { timeout: 6000 });
-    let data = await res.json();
-    if (Array.isArray(data) && data.length > 10) {
-      let candles = data.map(k => ({
-        open:   parseFloat(k[1]),
-        high:   parseFloat(k[2]),
-        low:    parseFloat(k[3]),
-        close:  parseFloat(k[4]),
-        volume: parseFloat(k[5])
-      }));
-      setCache(key, candles, 10000);
-      return candles;
-    }
-  } catch (e) {}
-
-  // --- วิธีที่ 2: Metals-API (free key - ราคา spot สร้าง synthetic candles)
-  try {
-    // ใช้ open exchange rates เพื่อดึงราคา XAU/USD
-    let res  = await fetch("https://api.frankfurter.app/latest?from=XAU&to=USD", { timeout: 5000 });
-    let data = await res.json();
-    if (data && data.rates && data.rates.USD) {
-      let price = data.rates.USD;
-      // สร้าง synthetic candles จากราคา spot (เหมาะสำหรับ context เท่านั้น)
-      let candles = Array.from({ length: limit }, (_, i) => {
-        let noise = (Math.random() - 0.5) * price * 0.003;
-        let open  = price + noise;
-        let close = price + (Math.random() - 0.5) * price * 0.002;
-        let high  = Math.max(open, close) + Math.random() * price * 0.002;
-        let low   = Math.min(open, close) - Math.random() * price * 0.002;
-        return { open, high, low, close, volume: 100 + Math.random() * 200 };
-      });
-      setCache(key, candles, 30000);
-      return candles;
-    }
-  } catch (e) {}
-
-  // --- วิธีที่ 3: ใช้ XAUUSDT จาก Bybit
-  try {
-    let bybitInterval = interval === "15m" ? "15" : interval === "1h" ? "60" : interval === "5m" ? "5" : interval === "1m" ? "1" : interval === "4h" ? "240" : interval === "1d" ? "D" : "15";
-    let res = await fetch(`https://api.bybit.com/v5/market/kline?category=spot&symbol=XAUUSDT&interval=${bybitInterval}&limit=${limit}`, { timeout: 8000 });
-    let data = await res.json();
-    if (data.result && data.result.list && data.result.list.length > 10) {
-      let candles = data.result.list.reverse().map(k => ({
-        open:   parseFloat(k[1]),
-        high:   parseFloat(k[2]),
-        low:    parseFloat(k[3]),
-        close:  parseFloat(k[4]),
-        volume: parseFloat(k[5])
-      }));
-      setCache(key, candles, 10000);
-      return candles;
-    }
-  } catch (e) {}
-
-  console.error("Gold fetch failed all sources");
-  return [];
-}
-
-// ==============================
-// FETCH CANDLES (router)
-// ==============================
-const TWELVE_DATA_KEY = "56792ed44351422a9469ff95af65a4c2";
+const TWELVE_DATA_KEY = process.env.TWELVE_DATA_KEY || "56792ed44351422a9469ff95af65a4c2";
 
 function toTwelveInterval(interval) {
   const map = { "1m":"1min","5m":"5min","15m":"15min","1h":"1h","4h":"4h","1d":"1day" };
@@ -203,6 +133,16 @@ async function fetchGoldCandles(interval = "15m", limit = 100) {
 }
 
 // ==============================
+// FETCH CANDLES (router)
+// ==============================
+async function fetchCandles(symbol, interval = "15m", limit = 100) {
+  if (symbol === "XAUUSDT" || symbol === "GOLD") {
+    return fetchGoldCandles(interval, limit);
+  }
+  return fetchBinanceCandles(symbol, interval, limit);
+}
+
+// ==============================
 // LAYER 1: MULTI-TF TREND
 // ==============================
 function multiTFTrend(c1m, c5m, c15m, c1h, c4h, c1d) {
@@ -218,10 +158,7 @@ function multiTFTrend(c1m, c5m, c15m, c1h, c4h, c1d) {
   const d4h  = dir(c4h,  20, 50);
   const d1d  = dir(c1d,  10, 20);
 
-  // น้ำหนักตาม TF (ใหญ่กว่า = สำคัญกว่า)
   let score = d1d * 6 + d4h * 5 + d1h * 4 + d15m * 3 + d5m * 2 + d1m * 1;
-
-  // Day bias — แต่สมมาตร
   const dayBias = (d4h === d1d && d4h !== 0) ? d4h * 2 : 0;
   score += dayBias;
 
@@ -248,7 +185,6 @@ function momentumPrecision(rsi, macdVal, candles, c5m) {
   if (macdVal > 0) score += 1;
   if (macdVal < 0) score -= 1;
 
-  // RSI divergence
   if (candles.length >= 20) {
     let src = c5m && c5m.length >= 20 ? c5m : candles;
     let priceOld = src[src.length - 10].close;
@@ -257,7 +193,6 @@ function momentumPrecision(rsi, macdVal, candles, c5m) {
     if (priceNew > priceOld && rsi < 60) { score -= 3; urgency = Math.max(urgency, 2); }
   }
 
-  // M1 momentum chain
   if (candles.length >= 3) {
     let [a, b, c] = [candles[candles.length - 1], candles[candles.length - 2], candles[candles.length - 3]];
     if (a.close > b.close && b.close > c.close) { score += 2; urgency = Math.max(urgency, 1); }
@@ -297,7 +232,6 @@ function precisionCandle(c1m, c5m) {
     trigger = c.close > c.open ? "BULL_MARUBOZU" : "BEAR_MARUBOZU";
   }
 
-  // M1 confirm
   if (c1m && c1m.length >= 2) {
     let l = c1m[c1m.length - 1], b = Math.abs(l.close - l.open), r = l.high - l.low;
     if (r > 0 && b > r * 0.8) score += l.close > l.open ? 2 : -2;
@@ -368,13 +302,11 @@ function structureSMC(c5m, c15m, c1h, smcR, wyR) {
 
 // ==============================
 // LAYER 6: PREDICTIVE ENGINE v7
-// เพิ่ม momentum shift + divergence ที่แม่นขึ้น
 // ==============================
 function predictiveEngine(candles, c5m, c1m, c1h) {
   let score = 0, signals = [];
   let src = c5m && c5m.length >= 20 ? c5m : candles;
 
-  // Momentum acceleration (ROC)
   if (src.length >= 11) {
     let roc5  = (src[src.length - 1].close - src[src.length - 6].close) / src[src.length - 6].close * 100;
     let roc10 = (src[src.length - 1].close - src[src.length - 11].close) / src[src.length - 11].close * 100;
@@ -385,7 +317,6 @@ function predictiveEngine(candles, c5m, c1m, c1h) {
     else if (accel < -0.04) { score -= 2; }
   }
 
-  // Volume expansion
   if (src.length >= 5) {
     let vols = src.slice(-5).map(c => c.volume), avgV = average(vols.slice(0, 4));
     let lv = vols[4], lc = src[src.length - 1];
@@ -393,7 +324,6 @@ function predictiveEngine(candles, c5m, c1m, c1h) {
     else if (lv > avgV * 1.5) { score += lc.close > lc.open ? 2 : -2; }
   }
 
-  // Compression breakout
   if (src.length >= 4) {
     let c1 = src[src.length - 1], c2 = src[src.length - 2], c3 = src[src.length - 3];
     let comp = c2.high < c3.high && c2.low > c3.low;
@@ -401,37 +331,31 @@ function predictiveEngine(candles, c5m, c1m, c1h) {
     if (comp && c1.close < c2.low)  { score -= 5; signals.push("BEAR_BREAK"); }
   }
 
-  // M1 chain (5 แท่ง)
   if (c1m && c1m.length >= 5) {
     let cl = c1m.slice(-5).map(c => c.close);
     if (cl.every((v, i) => i === 0 || v >= cl[i - 1])) { score += 3; signals.push("M1_BULL_5"); }
     if (cl.every((v, i) => i === 0 || v <= cl[i - 1])) { score -= 3; signals.push("M1_BEAR_5"); }
   }
 
-  // HH/HL or LH/LL
   if (candles.length >= 10) {
     let h1 = Math.max(...candles.slice(-10, -5).map(c => c.high)), h2 = Math.max(...candles.slice(-5).map(c => c.high));
     let l1 = Math.min(...candles.slice(-10, -5).map(c => c.low)),  l2 = Math.min(...candles.slice(-5).map(c => c.low));
     if (h2 > h1 && l2 > l1) { score += 3; signals.push("HH_HL"); }
     if (h2 < h1 && l2 < l1) { score -= 3; signals.push("LH_LL"); }
-    if (h2 < h1 && l2 > l1) { score -= 1; signals.push("LH"); }  // lower high = bearish
+    if (h2 < h1 && l2 > l1) { score -= 1; signals.push("LH"); }
     if (h2 > h1 && l2 < l1) { score += 1; signals.push("HL"); }
   }
 
-  // 1h trend confirm
   if (c1h && c1h.length >= 3) {
     let lc1h = c1h[c1h.length - 1], pc1h = c1h[c1h.length - 2];
     if (lc1h.close > lc1h.open && lc1h.close > pc1h.close) { score += 2; signals.push("1H_BULL"); }
     if (lc1h.close < lc1h.open && lc1h.close < pc1h.close) { score -= 2; signals.push("1H_BEAR"); }
   }
 
-  // MOMENTUM SHIFT DETECTION (ใหม่ v7)
-  // ตรวจจับ momentum เปลี่ยนทิศทาง 3 แท่งล่าสุด
   if (src.length >= 6) {
     let closes = src.slice(-6).map(c => c.close);
-    let prev3Trend = closes[2] - closes[0]; // 3 แท่งก่อน
-    let last3Trend = closes[5] - closes[3]; // 3 แท่งล่าสุด
-    // กลับทิศ = momentum shift
+    let prev3Trend = closes[2] - closes[0];
+    let last3Trend = closes[5] - closes[3];
     if (prev3Trend > 0 && last3Trend < 0 && Math.abs(last3Trend) > Math.abs(prev3Trend) * 0.5) {
       score -= 3; signals.push("SHIFT_BEAR");
     }
@@ -440,16 +364,13 @@ function predictiveEngine(candles, c5m, c1m, c1h) {
     }
   }
 
-  // PRICE ACTION REVERSAL (ใหม่ v7)
   if (src.length >= 5) {
     let c0 = src[src.length - 1];
     let c1 = src[src.length - 2];
     let c2 = src[src.length - 3];
-    // Bearish engulf after rally
     if (c0.close < c0.open && c1.close > c1.open && c0.close < c1.open && c2.close > c2.open) {
       score -= 3; signals.push("BEAR_REVERSAL");
     }
-    // Bullish engulf after drop
     if (c0.close > c0.open && c1.close < c1.open && c0.close > c1.open && c2.close < c2.open) {
       score += 3; signals.push("BULL_REVERSAL");
     }
@@ -509,7 +430,7 @@ function tripleTP(candles, c5m, c1h, signal, atr) {
     let roc10 = (src[src.length - 1].close - src[src.length - 11].close) / src[src.length - 11].close * 100;
     vel = Math.abs(roc5); accel = roc5 - roc10;
   }
-  let velMult   = Math.min(3.5, 1 + vel * 0.8);
+  let velMult    = Math.min(3.5, 1 + vel * 0.8);
   let accelBonus = accel > 0.1 ? 0.5 : 0;
 
   let sl, tp1, tp2, tp3;
@@ -543,30 +464,25 @@ function tripleTP(candles, c5m, c1h, signal, atr) {
 
 // ==============================
 // CONFLUENCE DECISION v7
-// ลด threshold เพื่อให้ SELL ขึ้น
 // ==============================
 function confluenceDecision(layerScores, urgency, tfAligned, d1h_dir, d4h_dir) {
-  let scores  = Object.values(layerScores);
-  let total   = scores.reduce((a, b) => a + b, 0);
-  let bull    = scores.filter(s => s > 0).length;
-  let bear    = scores.filter(s => s < 0).length;
+  let scores = Object.values(layerScores);
+  let total  = scores.reduce((a, b) => a + b, 0);
+  let bull   = scores.filter(s => s > 0).length;
+  let bear   = scores.filter(s => s < 0).length;
 
   let signal = "HOLD";
 
-  // Swing: 5/6 layers เห็นตรงกัน + 4h/1h align
-  let swingConf  = (bull >= 5 || bear >= 5) && d4h_dir === d1h_dir && d4h_dir !== 0;
-  // Day: 4/6 layers
-  let dayConf    = bull >= 4 || bear >= 4;
-  // Scalp: 3/6 layers + urgency
-  let scalpConf  = (bull >= 3 || bear >= 3) && tfAligned >= 2 && urgency > 0;
+  let swingConf = (bull >= 5 || bear >= 5) && d4h_dir === d1h_dir && d4h_dir !== 0;
+  let dayConf   = bull >= 4 || bear >= 4;
+  let scalpConf = (bull >= 3 || bear >= 3) && tfAligned >= 2 && urgency > 0;
 
-  // ลด threshold ลงจาก v6 เพื่อให้ SELL ขึ้นง่ายขึ้น
   if      (swingConf && Math.abs(total) >= 12) signal = total > 0 ? "BUY" : "SELL";
   else if (dayConf   && Math.abs(total) >= 8)  signal = total > 0 ? "BUY" : "SELL";
   else if (dayConf   && Math.abs(total) >= 6)  signal = total > 0 ? "BUY" : "SELL";
   else if (scalpConf && Math.abs(total) >= 5)  signal = total > 0 ? "BUY" : "SELL";
 
-  let agr = Math.max(bull, bear) / scores.length;
+  let agr        = Math.max(bull, bear) / scores.length;
   let swingBonus = swingConf ? 10 : 0, dayBonus = dayConf ? 5 : 0;
   let conf = Math.max(35, Math.min(90, Math.round(
     agr * 40 + tfAligned * 3 + urgency * 5 + Math.min(16, Math.abs(total) * 1.0) + swingBonus + dayBonus
@@ -617,17 +533,17 @@ async function analyzeMarket(symbol) {
   let session = (hour >= 13 && hour <= 17) ? "LONDON_NY" : (hour >= 7 && hour <= 12) ? "LONDON_OPEN" : (hour >= 18 && hour <= 21) ? "NEW_YORK" : "ASIA";
 
   let layerScores = {
-    trend:     L1.score,
-    momentum:  L2.score,
-    candle:    L3.score,
-    volume:    L4.score,
-    structure: good ? L5.score : Math.round(L5.score * 0.7),
+    trend:      L1.score,
+    momentum:   L2.score,
+    candle:     L3.score,
+    volume:     L4.score,
+    structure:  good ? L5.score : Math.round(L5.score * 0.7),
     predictive: L6.score
   };
 
-  let dec = confluenceDecision(layerScores, L2.urgency, L1.aligned, L1.d1h, L1.d4h);
-  let ttp = tripleTP(candles, c5m, c1h, dec.signal, atr);
-  let sr  = detectSR(candles);
+  let dec  = confluenceDecision(layerScores, L2.urgency, L1.aligned, L1.d1h, L1.d4h);
+  let ttp  = tripleTP(candles, c5m, c1h, dec.signal, atr);
+  let sr   = detectSR(candles);
   let vwap = calcVWAP(candles);
 
   let fvg = "NONE";
@@ -636,14 +552,12 @@ async function analyzeMarket(symbol) {
   if (f3.low > f1.high)  fvg = "BULLISH";
   if (f3.high < f1.low)  fvg = "BEARISH";
 
-  let liq = smcR.zone === "DISCOUNT" ? "BUY ZONE" : smcR.zone === "PREMIUM" ? "SELL ZONE" : "NEUTRAL";
-
+  let liq  = smcR.zone === "DISCOUNT" ? "BUY ZONE" : smcR.zone === "PREMIUM" ? "SELL ZONE" : "NEUTRAL";
   let slD  = dec.signal === "SELL" ? (price + atr).toFixed(2) : (price - atr).toFixed(2);
   let tp1D = dec.signal === "SELL" ? (price - atr * 1.5).toFixed(2) : (price + atr * 1.5).toFixed(2);
   let tp2D = dec.signal === "SELL" ? (price - atr * 3.5).toFixed(2) : (price + atr * 3.5).toFixed(2);
   let tp3D = dec.signal === "SELL" ? (price - atr * 6.0).toFixed(2) : (price + atr * 6.0).toFixed(2);
 
-  // Layer breakdown สำหรับ debug
   let layerDebug = {
     L1_trend:  L1.score.toFixed(1),
     L2_mom:    L2.score.toFixed(1),
@@ -692,7 +606,7 @@ async function analyzeMarket(symbol) {
     atr:         atr.toFixed(4),
     session,
     wyckoff:     wyR.phase || "UNKNOWN",
-    layers:      layerDebug   // debug info
+    layers:      layerDebug
   };
 }
 
@@ -727,8 +641,8 @@ server.get("/", (req, res) => res.sendFile(path.join(__dirname, "index.html")));
 
 server.listen(3000, () => {
   console.log("------------------------------");
-  console.log("🚀 NTW AI PRO v7.0 PORT 3000");
+  console.log("🚀 NTW AI PRO v7.1 PORT 3000");
+  console.log("✅ Gold: Twelve Data API");
   console.log("✅ SELL signal fix: ON");
-  console.log("✅ Gold API: Bybit/PAXG/Frankfurter");
   console.log("------------------------------");
 });
