@@ -164,11 +164,42 @@ async function fetchGoldCandles(interval = "15m", limit = 100) {
 // ==============================
 // FETCH CANDLES (router)
 // ==============================
-async function fetchCandles(symbol, interval = "15m", limit = 100) {
-  if (symbol === "XAUUSDT" || symbol === "GOLD") {
-    return fetchGoldCandles(interval, limit);
+const TWELVE_DATA_KEY = "56792ed44351422a9469ff95af65a4c2";
+
+function toTwelveInterval(interval) {
+  const map = { "1m":"1min","5m":"5min","15m":"15min","1h":"1h","4h":"4h","1d":"1day" };
+  return map[interval] || "15min";
+}
+
+async function fetchGoldCandles(interval = "15m", limit = 100) {
+  let key = `gold_${interval}`;
+  let cached = getCache(key);
+  if (cached) return cached;
+
+  try {
+    let tdInterval = toTwelveInterval(interval);
+    let url = `https://api.twelvedata.com/time_series?symbol=XAU/USD&interval=${tdInterval}&outputsize=${limit}&apikey=${TWELVE_DATA_KEY}`;
+    let res  = await fetch(url, { timeout: 8000 });
+    let data = await res.json();
+    if (data && data.values && Array.isArray(data.values) && data.values.length > 10) {
+      let candles = data.values.reverse().map(v => ({
+        open:   parseFloat(v.open),
+        high:   parseFloat(v.high),
+        low:    parseFloat(v.low),
+        close:  parseFloat(v.close),
+        volume: parseFloat(v.volume) || 100
+      }));
+      setCache(key, candles, 120000);
+      console.log(`[GOLD] OK price: ${candles[candles.length-1].close}`);
+      return candles;
+    }
+    if (data && data.message) console.error("[GOLD] Error:", data.message);
+  } catch (e) {
+    console.error("[GOLD] fetch error:", e.message);
   }
-  return fetchBinanceCandles(symbol, interval, limit);
+
+  console.error("[GOLD] fetch failed");
+  return [];
 }
 
 // ==============================
