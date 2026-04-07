@@ -119,7 +119,13 @@ async function fetchGoldCandles(interval = "15m", limit = 100) {
         close:  parseFloat(v.close),
         volume: parseFloat(v.volume) || 100
       }));
-      setCache(key, candles, 120000);
+      let ttl = interval === "1d" ? 3600000
+        : interval === "4h" ? 1800000
+        : interval === "1h" ? 600000
+        : interval === "15m" ? 300000
+        : 180000;
+      setCache(key, candles, ttl);
+
       console.log(`[GOLD] OK price: ${candles[candles.length-1].close}`);
       return candles;
     }
@@ -477,10 +483,10 @@ function confluenceDecision(layerScores, urgency, tfAligned, d1h_dir, d4h_dir) {
   let dayConf   = bull >= 4 || bear >= 4;
   let scalpConf = (bull >= 3 || bear >= 3) && tfAligned >= 2 && urgency > 0;
 
-  if      (swingConf && Math.abs(total) >= 12) signal = total > 0 ? "BUY" : "SELL";
-  else if (dayConf   && Math.abs(total) >= 8)  signal = total > 0 ? "BUY" : "SELL";
+  if      (swingConf && Math.abs(total) >= 10) signal = total > 0 ? "BUY" : "SELL";
   else if (dayConf   && Math.abs(total) >= 6)  signal = total > 0 ? "BUY" : "SELL";
-  else if (scalpConf && Math.abs(total) >= 5)  signal = total > 0 ? "BUY" : "SELL";
+  else if (dayConf   && Math.abs(total) >= 5)  signal = total > 0 ? "BUY" : "SELL";
+  else if (scalpConf && Math.abs(total) >= 4)  signal = total > 0 ? "BUY" : "SELL";
 
   let agr        = Math.max(bull, bear) / scores.length;
   let swingBonus = swingConf ? 10 : 0, dayBonus = dayConf ? 5 : 0;
@@ -540,6 +546,16 @@ async function analyzeMarket(symbol) {
     structure:  good ? L5.score : Math.round(L5.score * 0.7),
     predictive: L6.score
   };
+
+  if (isGold) {
+  let vols = candles.map(c => c.volume);
+  let uniqueVols = new Set(vols.slice(-10)).size;
+  if (uniqueVols <= 2) {
+    let lc = candles[candles.length - 1];
+    layerScores.volume = lc.close > lc.open ? 2 : -2;
+  }
+}
+
 
   let dec  = confluenceDecision(layerScores, L2.urgency, L1.aligned, L1.d1h, L1.d4h);
   let ttp  = tripleTP(candles, c5m, c1h, dec.signal, atr);
