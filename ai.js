@@ -29,6 +29,15 @@ function saveMemory() {
 
 loadMemory();
 
+// เพิ่มตรงนี้
+function cleanOldMemory() {
+  let cutoff = Date.now() - (7 * 24 * 60 * 60 * 1000);
+  tradeMemory = tradeMemory.filter(t => t.time > cutoff);
+  saveMemory();
+}
+cleanOldMemory();
+
+
 function logTrade(info) {
   tradeMemory.push(info);
   if (tradeMemory.length > 2000) tradeMemory.shift();
@@ -739,8 +748,8 @@ function aiAnalyze(data) {
 
   // FINAL SIGNAL — threshold สมมาตร
   let signal = "HOLD";
-  if (score >= 4) signal = "BUY";
-  if (score <= -4) signal = "SELL";
+  if (score >= 3) signal = "BUY";
+  if (score <= -3) signal = "SELL";
 
   // CONFIDENCE
   let trendBoost = Math.max(-5, Math.min(5, trendPower * 5));
